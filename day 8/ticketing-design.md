@@ -21,6 +21,7 @@ TicketHub is a website that sells tickets for concerts and events.
 - **Availability:** the site stays up during a big sale, even when 200,000 people arrive at once.
 - **Scalability:** the system copes with a sudden spike many times above normal traffic.
 - **Security:** passwords are stored hashed, and card details are handled by a payment provider, not stored by TicketHub.
+
 ## 2. Estimates
 
 Assumptions: one day has 86,400 seconds, and peak traffic on a normal day is 5 times the average.
@@ -53,6 +54,7 @@ Assumptions: one day has 86,400 seconds, and peak traffic on a normal day is 5 t
 In 10 minutes the big sale sells 20,000 tickets, which is 4 times a whole normal day's sales (5,000).
 
 **Conclusion:** the spike lasts only about 10 minutes, but it is hundreds of times busier than normal. We must design for the spike, not the average, and we must handle the 180,000 people who will not get a seat.
+
 ## 3. API
 
 All requests and responses use JSON. The holds, orders and tickets endpoints need the user to be logged in.
@@ -116,6 +118,7 @@ All requests and responses use JSON. The holds, orders and tickets endpoints nee
 - `400 Bad Request`: the request is invalid, for example asking to hold 10 seats when the limit is 4.
 - `401 Unauthorized`: the user is not logged in.
 - `404 Not Found`: the event does not exist.
+
 ## 4. Data model
 
 ### users
@@ -151,10 +154,6 @@ One row for each physical seat at each event.
 | order_id | foreign key to orders, empty until sold |
 
 Unique rule: (event_id, section, row_label, seat_number), so the same seat cannot appear twice for one event.
-
-
-| Column | Notes |
-|---|---|
 
 ### orders
 | Column | Notes |
@@ -281,3 +280,4 @@ Users (phones and browsers)
 3. **Cached seat map: speed versus accuracy.** A cache makes seat pages fast and cuts database load, but it can show a seat as free just after someone else took it. That user will get a "seat taken" answer when they try to hold it. This is acceptable because the hold step in the database always has the final say.
 4. **Hold time: fairness to buyers versus using every seat.** A long hold gives people time to pay but locks seats that may never be bought. A short hold frees seats quickly but pressures buyers. We chose 5 minutes as a balance.
 5. **One primary database for seats: simplicity versus scale.** A single primary keeps the "sold only once" guarantee simple, but it limits how many holds per second we can handle. If TicketHub grows, we could split seat data by event across several databases.
+
