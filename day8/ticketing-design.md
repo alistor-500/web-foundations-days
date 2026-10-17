@@ -280,4 +280,3 @@ Users (phones and browsers)
 3. **Cached seat map: speed versus accuracy.** A cache makes seat pages fast and cuts database load, but it can show a seat as free just after someone else took it. That user will get a "seat taken" answer when they try to hold it. This is acceptable because the hold step in the database always has the final say.
 4. **Hold time: fairness to buyers versus using every seat.** A long hold gives people time to pay but locks seats that may never be bought. A short hold frees seats quickly but pressures buyers. We chose 5 minutes as a balance.
 5. **One primary database for seats: simplicity versus scale.** A single primary keeps the "sold only once" guarantee simple, but it limits how many holds per second we can handle. If TicketHub grows, we could split seat data by event across several databases.
-
