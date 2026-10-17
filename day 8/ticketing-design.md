@@ -152,6 +152,10 @@ One row for each physical seat at each event.
 
 Unique rule: (event_id, section, row_label, seat_number), so the same seat cannot appear twice for one event.
 
+
+| Column | Notes |
+|---|---|
+
 ### orders
 | Column | Notes |
 |---|---|
@@ -172,9 +176,10 @@ Unique rule: (event_id, section, row_label, seat_number), so the same seat canno
 - **users to seats (holds) is one-to-many:** a user can temporarily hold several seats, but a seat is held by at most one user at a time.
 
 No join table is needed here because every seat row belongs to a single event and can be sold only once, so it links to at most one order.
+
 ## 5. How the design prevents two people buying the same seat
 
-During a big sale thousands of people try for the same seat at the same moment, so this must be solved in the database, not in the app's memory.
+During a big sale thousands of people try for the same seat at the same moment, so this must be solved inside the database, not in the app's memory.
 
 ### The wrong way: check, then update
 
@@ -192,12 +197,18 @@ WHERE seat_id = :seat_id
        OR (status = 'held' AND hold_expires_at < :now));
 ```
 
-The database changes one row at a time (it locks the row while it updates it). The first request changes the seat, so when the second request runs, its `WHERE` condition no longer matches. The app checks how many rows were changed: 1 means the user got the seat, and 0 means someone else did, so the app replies with `409 Conflict`.
+The database locks the row while it updates it, so requests for the same seat are handled one at a time. The first request changes the seat. When the second request runs, its `WHERE` condition no longer matches, so nothing changes. The app checks how many rows were changed: 1 means the user got the seat, and 0 means someone else did, so the app replies with `409 Conflict`.
+
+### Transactions and isolation levels
+
+A **transaction** groups several changes so that either all of them happen or none do. When someone holds three seats, all three updates run in one transaction. If any seat is already taken, the whole transaction is rolled back, so nobody ends up with a half-finished order.
+
+The **isolation level** decides how much concurrent transactions can see of each other's unfinished work. The strictest level, serializable, makes the database behave as if transactions ran one after another. It is the safest but the slowest under heavy load. We do not need it for seats, because the conditional update above locks the seat row until the transaction ends. In a common database such as PostgreSQL at its default level (read committed), a second transaction that wants the same seat waits for the first to finish, then re-checks the `WHERE` condition, finds the seat already held, and changes nothing. Only the rows being claimed are locked, so thousands of people buying different seats do not block each other. When a transaction holds several seats, it updates them in order of `seat_id`, so two people competing for the same seats cannot lock each other in a deadlock.
 
 ### The layers that protect each seat
 
-1. **Atomic hold:** the conditional update above lets only one person hold a seat.
-2. **Transactions:** when someone holds several seats, all the updates run in one transaction. If any seat is already taken, the transaction is rolled back, so nobody ends up with half an order.
+1. **Atomic hold:** the conditional update lets only one person hold a seat.
+2. **Transactions:** multi-seat holds succeed completely or not at all.
 3. **Hold expiry:** a hold lasts 5 minutes. After that the seat counts as available again, so abandoned seats return to the pool.
 4. **Confirming the sale:** when the user pays, the seats are only marked sold if this user still holds them:
 
@@ -210,12 +221,13 @@ WHERE seat_id = :seat_id
   AND hold_expires_at > :now;
 ```
 
-   The hold is extended a little when payment starts so it cannot expire halfway through paying. If the payment fails, the seats are released. If the update cannot mark every seat as sold, the transaction is rolled back and the payment is refunded.
+   The hold is extended a little when payment starts so it cannot expire halfway through paying. If the payment fails, the seats are released. If every seat cannot be marked as sold, the transaction is rolled back and the payment is refunded.
 5. **Constraints as a safety net:** `seat_id` is a primary key, and the unique rule on (event_id, section, row_label, seat_number) means each physical seat exists once for an event. A seat row has only one `order_id`, so it can belong to at most one order. A check on `status` allows only `available`, `held` or `sold`. Even if the app code has a bug, the database refuses the worst mistakes.
 
 ### Fairness
 
 In a big sale the waiting room (see the architecture) lets people in first come, first served, and each person can hold at most 4 seats.
+
 ## 6. Architecture
 
 ```
@@ -256,14 +268,16 @@ Users (phones and browsers)
 ### How the design survives the big sale
 
 - The **waiting room** turns 333 people arriving per second into a steady, controlled flow (for example about 100 people per second, a number we can tune), so the servers and database are never hit by all 200,000 at once.
-- The **seat map is cached** for a second or two, so thousands of people looking at seats do not each query the database. Only hold attempts reach the primary database.
+- The **cache** holds the seat map for a second or two, so thousands of people looking at seats do not each query the database. Only hold attempts reach the primary database.
 - We **add app servers before the sale starts**, because we know exactly when it begins.
 - Once all 20,000 seats are sold, a "sold out" flag is cached so the remaining people get an instant answer without touching the database.
-- **Payment and emails happen off the critical path**, so slow payments or emails never block people trying to hold seats.
+- The **queue** takes emails and tickets out of the buying path, so slow payments or emails never block people trying to hold seats.
 - **Holds expire after 5 minutes**, so seats that people abandon return to the pool quickly.
+
 ## 7. Trade-offs
 
-1. **Waiting room: protection and fairness versus delay.** It protects the system and gives everyone a fair turn, but people have to wait, some may give up, and it is one more system to build and run.
-2. **Cached seat map: speed versus accuracy.** A cache makes seat pages fast and cuts database load, but it can show a seat as free just after someone else took it. That user will get a "seat taken" answer when they try to hold it. This is acceptable because the hold step in the database always has the final say.
-3. **Hold time: fairness to buyers versus using every seat.** A long hold gives people time to pay but locks seats that may never be bought. A short hold frees seats quickly but pressures buyers. We chose 5 minutes as a balance.
-4. **One primary database for seats: correctness versus scale.** A single primary makes it simple to guarantee that a seat is sold only once, but it limits how many holds per second we can handle. If TicketHub grows, we could split seat data by event across several databases.
+1. **Strong consistency versus speed for seat reservations.** Holds and sales go to the primary database, which is always up to date, so a seat can never be sold twice. Eventual consistency, where seats are updated on copies and sync later, would be faster and easier to scale, but two people could be told they got the same seat. We accept slower, strongly consistent holds because selling a seat twice is the worst failure. Browsing events and viewing tickets can use the cache and read replica, where being a second or two behind is harmless.
+2. **Waiting room: protection and fairness versus delay.** It protects the system and gives everyone a fair turn, but people have to wait, some may give up, and it is one more system to build and run.
+3. **Cached seat map: speed versus accuracy.** A cache makes seat pages fast and cuts database load, but it can show a seat as free just after someone else took it. That user will get a "seat taken" answer when they try to hold it. This is acceptable because the hold step in the database always has the final say.
+4. **Hold time: fairness to buyers versus using every seat.** A long hold gives people time to pay but locks seats that may never be bought. A short hold frees seats quickly but pressures buyers. We chose 5 minutes as a balance.
+5. **One primary database for seats: simplicity versus scale.** A single primary keeps the "sold only once" guarantee simple, but it limits how many holds per second we can handle. If TicketHub grows, we could split seat data by event across several databases.
